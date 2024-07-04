@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""readSlicer: extract portions of reads that overlap a given locus
+
+Usage:
+    readSlicer [options] <bam> <chrom> <start> <stop>
+
+Options:
+    --pad       Add spaces to the output to align reads that start in the region of interest
+"""
+
+import docopt
+import pysam
+import sys
+
+cigar_ops = ["M", "I", "D", "N", "S", "H", "P", "=", "X", "B"]
+
+def extract_query_span(cig, r, start, stop):
+    r0 = r
+    q0 = 0
+    q1 = 0
+    q = 0
+    for (op, n) in cig:
+        #print(f'{start}\t{stop}\tr={r}\tq={q}\top={cigar_ops[op]}\tn={n}\tq0={q0}')
+        # M, =, X
+        if op == 0 or op == 7 or op == 8:
+            if r <= start and r + n > start:
+                q0 = q + (start - r)
+                r0 = start
+            if r < stop and  r + n >= stop:
+                q += stop - r
+                return (q0, q, r0, stop)
+            r += n
+            q += n
+
+        # I
+        if op == 1:
+            q += n
+
+        # D, *
+        if op == 2 or op == 3:
+            if r <= start and r + n > start:
+                q0 = q
+                r0 = start
+            if r < stop and  r + n >= stop:
+                return (q0, q, r0, stop)
+            r += n
+        if n == 4:
+            q += n
+    return (q0, q, r0, r)
+
+def process_file(fn, chrom, start, stop):
+    with pysam.AlignmentFile(fn, "rb") as bam:
+        for aln in bam.fetch(chrom, start, stop):
+            if aln.is_unmapped:
+                continue
+            rs = aln.reference_start + 1
+            re = aln.reference_end + 1
+            if re < start or rs >= stop:
+                continue
+            span = extract_query_span(aln.cigartuples, rs, start, stop)
+            seq = aln.query_sequence[span[0]:span[1]]
+            refStart = span[2]
+            refStop = span[3]
+            yield (aln.query_name, seq, refStart, refStop)
+
+def main(args):
+    fn = args['<bam>']
+    chrom = args['<chrom>']
+    start = int(args['<start>'])
+    stop = int(args['<stop>'])
+    doPadding = args['--pad']
+    for (qn, seq, refStart, refStop) in process_file(fn, chrom, start, stop):
+        if len(seq) == 0:
+            seq = '*'
+        padding = ''
+        if doPadding:
+            padding = (refStart - start)*' '
+        print(f'{qn}\t{refStart}\t{refStop}\t{padding}{seq}')
+
+if __name__ == '__main__':
+    args = docopt.docopt(__doc__, version='readSlicer')
+    main(args)
